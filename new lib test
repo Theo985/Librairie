@@ -1,0 +1,660 @@
+-- ============================================
+-- RIVALS CHEAT LIBRARY v1.0
+-- Functions: Aimbot, ESP, Noclip, Fly, Speed, etc.
+-- ============================================
+
+local Library = {}
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================
+-- SETTINGS (Edit these)
+-- ============================================
+local Settings = {
+    -- Aimbot Settings
+    AimbotEnabled = false,
+    AimbotKey = "RightMouseButton",  -- RMB to aim
+    AimbotSmoothness = 0.3,           -- 0 = instant, 1 = very smooth
+    AimbotRadius = 200,               -- Max distance to aim at
+    AimbotVisibleOnly = true,         -- Only aim at visible enemies
+    AimbotPriority = "Distance",      -- "Distance" or "Crosshair"
+    
+    -- Silent Aim Settings
+    SilentAimEnabled = false,
+    
+    -- Triggerbot Settings
+    TriggerbotEnabled = false,
+    TriggerbotDelay = 0.05,           -- Seconds between shots
+    
+    -- ESP Settings
+    ESPEnabled = false,
+    ESPBoxes = true,
+    ESPNames = true,
+    ESPHealth = true,
+    ESPDistance = true,
+    ESPTracers = false,
+    
+    -- Movement Settings
+    NoclipEnabled = false,
+    FlyEnabled = false,
+    SpeedEnabled = false,
+    SpeedValue = 50,
+    
+    -- Visual Settings
+    CrosshairEnabled = false,
+    
+    -- Player to target (leave nil for all enemies)
+    TargetPlayer = nil,
+}
+
+-- ============================================
+-- UTILITY FUNCTIONS
+-- ============================================
+
+-- Check if a player is enemy
+function Library.IsEnemy(player)
+    if player == LocalPlayer then return false end
+    if player.Team == LocalPlayer.Team then return false end
+    return true
+end
+
+-- Get all alive enemies
+function Library.GetAliveEnemies()
+    local enemies = {}
+    for _, player in pairs(Players:GetPlayers()) do
+        if Library.IsEnemy(player) and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            table.insert(enemies, player)
+        end
+    end
+    return enemies
+end
+
+-- Get closest enemy to crosshair or position
+function Library.GetClosestEnemy(useCrosshair)
+    local enemies = Library.GetAliveEnemies()
+    local closest = nil
+    local closestDistance = math.huge
+    
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    for _, enemy in pairs(enemies) do
+        local character = enemy.Character
+        if character then
+            local head = character:FindFirstChild("Head")
+            if head then
+                local vector, onScreen = Camera:WorldToScreenPoint(head.Position)
+                local distance = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) and 
+                    (head.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude or math.huge
+                
+                local priorityDistance
+                if useCrosshair then
+                    local screenDistance = (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude
+                    priorityDistance = screenDistance
+                else
+                    priorityDistance = distance
+                end
+                
+                if Settings.AimbotVisibleOnly then
+                    local ray = Ray.new(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position).unit * distance)
+                    local hit = workspace:FindPartOnRay(ray, LocalPlayer.Character)
+                    if not hit or hit:IsDescendantOf(character) then
+                        if priorityDistance < closestDistance then
+                            closest = enemy
+                            closestDistance = priorityDistance
+                        end
+                    end
+                else
+                    if priorityDistance < closestDistance then
+                        closest = enemy
+                        closestDistance = priorityDistance
+                    end
+                end
+            end
+        end
+    end
+    return closest, closestDistance
+end
+
+-- Smoothly move camera to target
+function Library.SmoothAim(targetPosition)
+    if not targetPosition then return end
+    
+    local currentCFrame = Camera.CFrame
+    local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPosition)
+    
+    local lerpedCFrame = currentCFrame:Lerp(targetCFrame, Settings.AimbotSmoothness)
+    Camera.CFrame = lerpedCFrame
+end
+
+-- ============================================
+-- AIMBOT
+-- ============================================
+
+local aimbotConnection = nil
+
+function Library.StartAimbot()
+    if aimbotConnection then aimbotConnection:Disconnect() end
+    
+    aimbotConnection = RunService.RenderStepped:Connect(function()
+        if not Settings.AimbotEnabled then return end
+        
+        -- Check if aim key is held
+        if Settings.AimbotKey == "Always" or UserInputService:IsMouseButtonPressed(Enum.UserInputType[Settings.AimbotKey]) then
+            local target = Library.GetClosestEnemy(Settings.AimbotPriority == "Crosshair")
+            if target and target.Character and target.Character:FindFirstChild("Head") then
+                local headPos = target.Character.Head.Position
+                Library.SmoothAim(headPos)
+            end
+        end
+    end)
+end
+
+function Library.StopAimbot()
+    if aimbotConnection then
+        aimbotConnection:Disconnect()
+        aimbotConnection = nil
+    end
+end
+
+-- ============================================
+-- SILENT AIM
+-- ============================================
+
+local originalMouseBehaviour = nil
+
+function Library.StartSilentAim()
+    -- Override mouse hit/P2 point
+    local mt = getrawmetatable(game)
+    local old = mt.__index
+    
+    setreadonly(mt, false)
+    mt.__index = function(self, key)
+        if key == "Hit" or key == "Target" then
+            local target = Library.GetClosestEnemy(true)
+            if target and target.Character and target.Character:FindFirstChild("Head") then
+                return target.Character.Head.CFrame
+            end
+        end
+        return old(self, key)
+    end
+    setreadonly(mt, true)
+end
+
+-- ============================================
+-- TRIGGERBOT (Auto-shoot)
+-- ============================================
+
+local triggerbotConnection = nil
+
+function Library.StartTriggerbot()
+    triggerbotConnection = RunService.RenderStepped:Connect(function()
+        if not Settings.TriggerbotEnabled then return end
+        
+        local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        local mouse = LocalPlayer:GetMouse()
+        
+        for _, enemy in pairs(Library.GetAliveEnemies()) do
+            if enemy.Character and enemy.Character:FindFirstChild("Head") then
+                local vector, onScreen = Camera:WorldToScreenPoint(enemy.Character.Head.Position)
+                if onScreen and (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude < 30 then
+                    -- Click to shoot
+                    mouse1click()
+                    task.wait(Settings.TriggerbotDelay)
+                end
+            end
+        end
+    end)
+end
+
+-- ============================================
+-- ESP
+-- ============================================
+
+local espObjects = {}
+
+function Library.CreateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            Library.CreateESPForPlayer(player)
+        end
+    end
+    
+    -- New player added
+    Players.PlayerAdded:Connect(function(player)
+        player.CharacterAdded:Connect(function()
+            Library.CreateESPForPlayer(player)
+        end)
+    end)
+end
+
+function Library.CreateESPForPlayer(player)
+    if espObjects[player] then
+        Library.RemoveESPForPlayer(player)
+    end
+    
+    local character = player.Character
+    if not character then return end
+    
+    local humanoidRootPart = character:WaitForChild("HumanoidRootPart", 5)
+    if not humanoidRootPart then return end
+    
+    -- Create BillboardGui
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_" .. player.Name
+    billboard.Adornee = humanoidRootPart
+    billboard.Size = UDim2.new(0, 4, 0, 4)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    
+    local frame = Instance.new("Frame", billboard)
+    frame.Size = UDim2.new(0, 40, 0, 40)
+    frame.BackgroundTransparency = 0.5
+    frame.BackgroundColor3 = player.TeamColor and player.TeamColor.Color or Color3.new(1, 0, 0)
+    frame.BorderSizePixel = 0
+    
+    -- Name label
+    local nameLabel = Instance.new("TextLabel", billboard)
+    nameLabel.Size = UDim2.new(0, 80, 0, 20)
+    nameLabel.Position = UDim2.new(0, -20, 0, -25)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = player.Name
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextStrokeTransparency = 0.5
+    nameLabel.Font = Enum.Font.Gothom
+    nameLabel.TextSize = 12
+    
+    -- Health label
+    local healthLabel = Instance.new("TextLabel", billboard)
+    healthLabel.Size = UDim2.new(0, 40, 0, 16)
+    healthLabel.Position = UDim2.new(0, 0, 0, 42)
+    healthLabel.BackgroundTransparency = 1
+    healthLabel.Text = "100 HP"
+    healthLabel.TextColor3 = Color3.new(0, 1, 0)
+    healthLabel.TextSize = 10
+    
+    -- Health bar
+    local healthBar = Instance.new("Frame", billboard)
+    healthBar.Size = UDim2.new(1, 0, 0, 3)
+    healthBar.Position = UDim2.new(0, 0, 0, 40)
+    healthBar.BackgroundColor3 = Color3.new(0, 1, 0)
+    healthBar.BorderSizePixel = 0
+    
+    local healthBg = Instance.new("Frame", billboard)
+    healthBg.Size = UDim2.new(1, 0, 0, 3)
+    healthBg.Position = UDim2.new(0, 0, 0, 40)
+    healthBg.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+    healthBg.BorderSizePixel = 0
+    
+    healthBg.Size = UDim2.new(1, 0, 0, 3)
+    healthBar.ZIndex = 2
+    
+    billboard.Parent = humanoidRootPart
+    espObjects[player] = billboard
+    
+    -- Update health
+    local humanoid = character:WaitForChild("Humanoid")
+    humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+        local healthPercent = humanoid.Health / humanoid.MaxHealth
+        healthBar.Size = UDim2.new(healthPercent, 0, 0, 3)
+        healthLabel.Text = math.floor(humanoid.Health) .. " HP"
+        
+        if healthPercent > 0.5 then
+            healthBar.BackgroundColor3 = Color3.new(0, 1, 0)
+        elseif healthPercent > 0.25 then
+            healthBar.BackgroundColor3 = Color3.new(1, 0.5, 0)
+        else
+            healthBar.BackgroundColor3 = Color3.new(1, 0, 0)
+        end
+    end)
+end
+
+function Library.RemoveESPForPlayer(player)
+    if espObjects[player] then
+        espObjects[player]:Destroy()
+        espObjects[player] = nil
+    end
+end
+
+function Library.RemoveAllESP()
+    for player, gui in pairs(espObjects) do
+        gui:Destroy()
+    end
+    espObjects = {}
+end
+
+-- ============================================
+-- NOCLIP
+-- ============================================
+
+local noclipConnection = nil
+
+function Library.StartNoclip()
+    if noclipConnection then noclipConnection:Disconnect() end
+    
+    noclipConnection = RunService.Stepped:Connect(function()
+        if not Settings.NoclipEnabled then return end
+        
+        local character = LocalPlayer.Character
+        if character then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+end
+
+function Library.StopNoclip()
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+    end
+    
+    -- Reset collisions
+    local character = LocalPlayer.Character
+    if character then
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- ============================================
+-- FLY
+-- ============================================
+
+local flyConnection = nil
+local flyBodyVelocity = nil
+
+function Library.StartFly()
+    if flyConnection then Library.StopFly() end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoidRootPart then return end
+    
+    flyBodyVelocity = Instance.new("BodyVelocity")
+    flyBodyVelocity.MaxForce = Vector3.new(1, 1, 1) * 100000
+    flyBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    flyBodyVelocity.Parent = humanoidRootPart
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
+    
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not Settings.FlyEnabled then return end
+        
+        local cameraCFrame = Camera.CFrame
+        local moveDirection = Vector3.new()
+        
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDirection = moveDirection + cameraCFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDirection = moveDirection - cameraCFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDirection = moveDirection + cameraCFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDirection = moveDirection - cameraCFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            moveDirection = moveDirection + Vector3.new(0, 1, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            moveDirection = moveDirection + Vector3.new(0, -1, 0)
+        end
+        
+        if moveDirection.Magnitude > 0 then
+            moveDirection = moveDirection.unit * 50
+        end
+        
+        flyBodyVelocity.Velocity = moveDirection
+    end)
+end
+
+function Library.StopFly()
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    
+    if flyBodyVelocity then
+        flyBodyVelocity:Destroy()
+        flyBodyVelocity = nil
+    end
+    
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = false
+        end
+    end
+end
+
+-- ============================================
+-- SPEED HACK
+-- ============================================
+
+function Library.SetSpeed(speed)
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = speed
+        end
+    end
+end
+
+function Library.ResetSpeed()
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 16  -- Default Roblox speed
+        end
+    end
+end
+
+-- ============================================
+-- CROSSHAIR
+-- ============================================
+
+local crosshairGui = nil
+
+function Library.CreateCrosshair()
+    if crosshairGui then crosshairGui:Destroy() end
+    
+    crosshairGui = Instance.new("ScreenGui")
+    crosshairGui.Name = "CustomCrosshair"
+    crosshairGui.Parent = game:GetService("CoreGui")
+    
+    local crosshair = Instance.new("Frame")
+    crosshair.Size = UDim2.new(0, 2, 0, 16)
+    crosshair.Position = UDim2.new(0.5, -1, 0.5, -8)
+    crosshair.BackgroundColor3 = Color3.new(1, 1, 1)
+    crosshair.BorderSizePixel = 0
+    crosshair.Parent = crosshairGui
+    
+    local crosshair2 = Instance.new("Frame")
+    crosshair2.Size = UDim2.new(0, 16, 0, 2)
+    crosshair2.Position = UDim2.new(0.5, -8, 0.5, -1)
+    crosshair2.BackgroundColor3 = Color3.new(1, 1, 1)
+    crosshair2.BorderSizePixel = 0
+    crosshair2.Parent = crosshairGui
+    
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 2, 0, 2)
+    dot.Position = UDim2.new(0.5, -1, 0.5, -1)
+    dot.BackgroundColor3 = Color3.new(1, 0, 0)
+    dot.BorderSizePixel = 0
+    dot.Parent = crosshairGui
+end
+
+function Library.RemoveCrosshair()
+    if crosshairGui then
+        crosshairGui:Destroy()
+        crosshairGui = nil
+    end
+end
+
+-- ============================================
+-- SIMPLE GUI (FLUXUS STYLE)
+-- ============================================
+
+function Library.CreateGUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "RivalsLibrary"
+    gui.Parent = game:GetService("CoreGui")
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 300, 0, 400)
+    mainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
+    mainFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.15)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = gui
+    
+    -- Title
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 30)
+    title.BackgroundColor3 = Color3.new(0.2, 0.2, 0.3)
+    title.Text = "Rivals Cheat Library"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.Font = Enum.Font.GothomBold
+    title.TextSize = 18
+    title.Parent = mainFrame
+    
+    -- Make draggable
+    local dragging = false
+    local dragStart
+    local startPos
+    
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainFrame.Position
+        end
+    end)
+    
+    title.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    -- Toggle buttons
+    local yOffset = 40
+    local buttons = {
+        {"Aimbot", "AimbotEnabled"},
+        {"Silent Aim", "SilentAimEnabled"},
+        {"Triggerbot", "TriggerbotEnabled"},
+        {"ESP", "ESPEnabled"},
+        {"Noclip", "NoclipEnabled"},
+        {"Fly", "FlyEnabled"},
+        {"Speed", "SpeedEnabled"},
+    }
+    
+    for _, btn in pairs(buttons) do
+        local button = Instance.new("TextButton")
+        button.Size = UDim2.new(0, 120, 0, 30)
+        button.Position = UDim2.new(0, 10, 0, yOffset)
+        button.BackgroundColor3 = Color3.new(0.2, 0.2, 0.3)
+        button.Text = btn[1] .. " [OFF]"
+        button.TextColor3 = Color3.new(1, 1, 1)
+        button.Font = Enum.Font.Gothom
+        button.TextSize = 14
+        button.Parent = mainFrame
+        
+        local setting = Settings[btn[2]]
+        button.MouseButton1Click:Connect(function()
+            Settings[btn[2]] = not Settings[btn[2]]
+            button.Text = btn[1] .. (Settings[btn[2]] and " [ON]" or " [OFF]")
+            
+            -- Start/stop features automatically
+            if btn[2] == "AimbotEnabled" then
+                if Settings.AimbotEnabled then Library.StartAimbot() else Library.StopAimbot() end
+            elseif btn[2] == "ESPEnabled" then
+                if Settings.ESPEnabled then Library.CreateESP() else Library.RemoveAllESP() end
+            elseif btn[2] == "NoclipEnabled" then
+                if Settings.NoclipEnabled then Library.StartNoclip() else Library.StopNoclip() end
+            elseif btn[2] == "FlyEnabled" then
+                if Settings.FlyEnabled then Library.StartFly() else Library.StopFly() end
+            elseif btn[2] == "SpeedEnabled" then
+                if Settings.SpeedEnabled then Library.SetSpeed(Settings.SpeedValue) else Library.ResetSpeed() end
+            end
+        end)
+        
+        yOffset = yOffset + 40
+    end
+    
+    -- Speed slider
+    local speedLabel = Instance.new("TextLabel")
+    speedLabel.Size = UDim2.new(0, 120, 0, 20)
+    speedLabel.Position = UDim2.new(0, 150, 0, 40)
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.Text = "Speed: " .. Settings.SpeedValue
+    speedLabel.TextColor3 = Color3.new(1, 1, 1)
+    speedLabel.Font = Enum.Font.Gothom
+    speedLabel.TextSize = 12
+    speedLabel.Parent = mainFrame
+    
+    local speedSlider = Instance.new("TextBox")
+    speedSlider.Size = UDim2.new(0, 80, 0, 25)
+    speedSlider.Position = UDim2.new(0, 150, 0, 60)
+    speedSlider.BackgroundColor3 = Color3.new(0.2, 0.2, 0.3)
+    speedSlider.Text = tostring(Settings.SpeedValue)
+    speedSlider.TextColor3 = Color3.new(1, 1, 1)
+    speedSlider.Font = Enum.Font.Gothom
+    speedSlider.TextSize = 14
+    speedSlider.Parent = mainFrame
+    
+    speedSlider.FocusLost:Connect(function()
+        local num = tonumber(speedSlider.Text)
+        if num then
+            Settings.SpeedValue = math.clamp(num, 16, 250)
+            speedSlider.Text = tostring(Settings.SpeedValue)
+            speedLabel.Text = "Speed: " .. Settings.SpeedValue
+            if Settings.SpeedEnabled then
+                Library.SetSpeed(Settings.SpeedValue)
+            end
+        else
+            speedSlider.Text = tostring(Settings.SpeedValue)
+        end
+    end)
+end
+
+-- ============================================
+-- INITIALIZE EVERYTHING
+-- ============================================
+
+function Library.Initialize()
+    Library.CreateGUI()
+    print("Rivals Cheat Library Loaded!")
+    print("Use Settings table to configure features")
+end
+
+-- Return the library
+return Library
